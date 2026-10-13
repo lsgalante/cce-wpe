@@ -12,7 +12,7 @@
 //! fixed `XK_*` values. Getting this wrong is silent — the page just receives
 //! nothing useful.
 
-use cce_ui::widget::{ElementState, Key, KeyEvent, MouseButton, NamedKey};
+use cce_ui::widget::{ElementState, Key, KeyEvent, MouseButton, NamedKey, ScrollPhase};
 
 use crate::ffi::*;
 
@@ -136,6 +136,52 @@ pub fn modifiers(ctrl: bool, shift: bool, alt: bool) -> WPEModifiers::Type {
 
 pub fn is_pressed(e: &KeyEvent) -> bool {
     e.state == ElementState::Pressed
+}
+
+/// A precise (pixel) scroll event for `view`, with the deltas and the point
+/// `(x, y)` in logical pixels. The deltas are in cce-ui's winit convention
+/// (positive = toward the top / left) and pass through **unchanged**.
+///
+/// Measured, not assumed: WPE already inverts on the way to the DOM, so a
+/// negation here double-inverts and the page scrolls backwards. An earlier
+/// cut negated them and cce-browser's `examples/wpe_input` caught it — the
+/// page reported `deltaY` of the wrong sign.
+///
+/// `phase` is the gesture stage, and it decides how WebKit reads the event.
+/// A host forwarding a live wheel passes cce-ui's
+/// `scroll_motion::current_scroll_phase()`; one synthesizing a scroll passes
+/// [`ScrollPhase::Wheel`], since outside a dispatch the published phase is
+/// whatever the last real event left, possibly a stale `FingerEnd`. Finger
+/// phases report the touchpad source so the engine treats the deltas as a
+/// gesture, not clicks, and `FingerEnd` — a trackpad's finger lift, arriving
+/// as a zero delta — is WebKit's scroll-stop, the signal its own kinetic
+/// scrolling keys off. This lived in each host until 2026-10-13, and
+/// cce-mail's copy sent every event as a mouse wheel with no stop, so a
+/// flick in its HTML view stopped dead at the lift five weeks after
+/// cce-browser had fixed the same thing in its own.
+///
+/// # Safety
+///
+/// `view` must be a live `WPEView`. The event comes back owned (or null),
+/// for the host to dispatch and unref.
+pub unsafe fn scroll_event(view: *mut WPEView, phase: ScrollPhase, dx: f64, dy: f64, x: f64, y: f64) -> *mut WPEEvent {
+    let (source, is_stop) = match phase {
+        ScrollPhase::Wheel => (WPEInputSource::WPE_INPUT_SOURCE_MOUSE, 0),
+        ScrollPhase::Finger => (WPEInputSource::WPE_INPUT_SOURCE_TOUCHPAD, 0),
+        ScrollPhase::FingerEnd => (WPEInputSource::WPE_INPUT_SOURCE_TOUCHPAD, 1),
+    };
+    wpe_event_scroll_new(
+        view,
+        source,
+        now_ms(),
+        0,
+        dx,
+        dy,
+        1, // precise deltas: these are pixels, not notches
+        is_stop,
+        x,
+        y,
+    )
 }
 
 /// WPE stamps events with a millisecond clock. It only has to be monotonic

@@ -12,7 +12,7 @@ GitHub, and the post-commit hook pushes.
 | `ffi` | bindgen over `src/wrapper.h` (`wpe/webkit.h` + `wpe/wpe-platform.h`), with an allowlist of the GLib/GObject/JSC items the embedding needs (`build.rs`) |
 | `subclass` | the WPEPlatform `WPEDisplay` / `WPEView` / `WPEToplevel` subclasses: frames go to `FRAME_SINK` instead of a Wayland surface, clipboard sync, the input-method context hook |
 | `glib_source` | GLib's main context driven from calloop (one epoll fd over GLib's pollfd set, plus GLib's own deadline) |
-| `input` | cce-ui `KeyEvent` / `MouseButton` into `WPEEvent`s |
+| `input` | cce-ui `KeyEvent` / `MouseButton` into `WPEEvent`s, and the wheel's scroll event in its gesture phase (`scroll_event` — the touchpad source and finger-lift stop WebKit's kinetic scrolling needs) |
 | `damage` | a frame's damage rects, merged and packed for a partial upload |
 | `ime` | the input-method context: which page field is open, its caret, and `inputmode="none"` |
 
