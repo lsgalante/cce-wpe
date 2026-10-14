@@ -7,7 +7,7 @@ license = "GPL-3.0"
 
 [dependencies]
 # input.rs translates cce-ui's key and mouse events into WPEEvents.
-cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "a73d4efaaaf2f0b1559dc5664a5cd58e11b8c222" }
+cce-ui = { git = "https://github.com/lsgalante/cce-ui.git", rev = "3bf5ec56d3c805c6fae308206427d194b19a901f" }
 # GLib's changing pollfd set, held in one epoll fd (glib_source.rs).
 rustix = { version = "0.38", features = ["event"] }
 log = "0.4"
