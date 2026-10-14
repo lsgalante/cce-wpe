@@ -18,7 +18,7 @@ pub mod ffi {
     #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case, dead_code)]
     // bindgen's output, regenerated every build: its bitfield accessors trip
     // these, and there is no source to fix them in.
-    #![allow(clippy::useless_transmute, clippy::ptr_offset_with_cast)]
+    #![allow(clippy::useless_transmute, clippy::ptr_offset_with_cast, clippy::missing_safety_doc, clippy::too_many_arguments)]
     include!(concat!(env!("OUT_DIR"), "/wpe_bindings.rs"));
 }
 

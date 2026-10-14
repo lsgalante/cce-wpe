@@ -169,6 +169,10 @@ unsafe extern "C" fn class_init(class: *mut c_void, _data: *mut c_void) {
 }
 
 /// `WPEDisplayClass::create_input_method_context`.
+///
+/// # Safety
+///
+/// Called by WPE on the GLib main thread, with `view` a live `WPEView`.
 pub unsafe extern "C" fn create_context(
     _d: *mut WPEDisplay,
     view: *mut WPEView,
@@ -210,6 +214,11 @@ pub fn field(view: *mut WPEView) -> Option<Option<(i32, i32, i32, i32)>> {
 
 /// Install the `inputmode` watcher on the content manager every tab is
 /// built against, with its channel. Once per host, for its whole life.
+///
+/// # Safety
+///
+/// `ucm` must be a live `WebKitUserContentManager`, and this must run on the
+/// GLib main thread that dispatches its signals.
 pub unsafe fn install_watch(ucm: *mut WebKitUserContentManager) {
     let (name, world) = (cstr(CHANNEL), cstr(WORLD));
     if webkit_user_content_manager_register_script_message_handler(ucm, name.as_ptr(), world.as_ptr()) == 0 {

@@ -24,6 +24,12 @@ use std::ffi::{c_char, c_void, CString};
 use crate::ffi::*;
 
 /// Register a GObject subclass of `parent`, sized from the runtime type query.
+///
+/// # Safety
+///
+/// `parent` must be a registered GType, and `class_init` must treat its
+/// first argument as `parent`'s class struct (the subclass's is the same
+/// size). Each `name` may be registered once per process.
 pub unsafe fn register_subclass(
     parent: GType,
     name: &str,
@@ -61,6 +67,11 @@ pub struct Types {
 
 static mut TYPES: Option<Types> = None;
 
+/// The subclasses, registered on the first call.
+///
+/// # Safety
+///
+/// Main thread only: the first call writes a `static mut` unguarded.
 pub unsafe fn types() -> &'static Types {
     #[allow(static_mut_refs)]
     if TYPES.is_none() {
@@ -279,6 +290,11 @@ pub static mut SYNCING: bool = false;
 /// nothing until this existed. A native Wayland backend would push this on
 /// every selection change; we do it at the moment it matters — the paste —
 /// rather than polling `wl-paste` in the background forever.
+///
+/// # Safety
+///
+/// `display` must be a live `WPEDisplay`, on the GLib main thread (the
+/// `SYNCING` flag around the set is an unguarded `static mut`).
 pub unsafe fn sync_system_clipboard(display: *mut WPEDisplay) {
     let Some(text) = cce_ui::widget::clipboard::read_from_clipboard() else {
         return;
