@@ -32,6 +32,7 @@ mod keysym {
     pub const PAGE_DOWN: u32 = 0xff56;
     pub const END: u32 = 0xff57;
     pub const DELETE: u32 = 0xffff;
+    pub const INSERT: u32 = 0xff63;
     pub const F1: u32 = 0xffbe;
     pub const F2: u32 = 0xffbf;
     pub const F3: u32 = 0xffc0;
@@ -78,6 +79,7 @@ pub fn keyval(key: &Key) -> Option<u32> {
             NamedKey::PageDown => keysym::PAGE_DOWN,
             NamedKey::PageUp => keysym::PAGE_UP,
             NamedKey::Delete => keysym::DELETE,
+            NamedKey::Insert => keysym::INSERT,
             NamedKey::Control => keysym::CONTROL_L,
             NamedKey::Shift => keysym::SHIFT_L,
             NamedKey::Alt => keysym::ALT_L,
