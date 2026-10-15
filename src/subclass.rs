@@ -156,10 +156,61 @@ unsafe extern "C" fn view_class_init(class: *mut c_void, _data: *mut c_void) {
 
 // ---- toplevel ----
 
+/// GPU buffers WebKit may render into instead of mappable memory, when the
+/// app can draw them where they are ([`offer_dmabuf`]).
+pub struct DmaBufOffer {
+    /// The DRM device the app samples on, where WebKit must allocate.
+    pub render_node: CString,
+    pub primary_node: Option<CString>,
+    /// DRM fourcc, each with the modifiers the app can sample it in.
+    pub formats: Vec<(u32, Vec<u64>)>,
+}
+
+static mut DMABUF: Option<(DmaBufOffer, *mut WPEDRMDevice)> = None;
+
+/// Offer WebKit GPU buffers (DMABufs) on the app's device, ahead of the
+/// mappable memory every app gets otherwise; frames then arrive as
+/// `WPEBufferDMABuf`. **Before the first webview**: WebKit settles a
+/// toplevel's buffer type when it first uses it, and a later offer is not
+/// taken up (measured). An app that does not call this keeps SHM.
+///
+/// Without a device on the display *and* on the format group, WebKit
+/// ignores a DMABuf offer and quietly stays on SHM — which is why the
+/// device is part of the offer.
+///
+/// # Safety
+///
+/// Main thread only, before any webview exists (an unguarded `static mut`).
+pub unsafe fn offer_dmabuf(offer: DmaBufOffer) {
+    let primary = offer.primary_node.as_ref().map_or(std::ptr::null(), |p| p.as_ptr());
+    let device = wpe_drm_device_new(primary, offer.render_node.as_ptr());
+    DMABUF = Some((offer, device));
+}
+
+/// Whether [`offer_dmabuf`] was made.
+pub fn dmabuf_offered() -> bool {
+    #[allow(static_mut_refs)]
+    unsafe {
+        DMABUF.is_some()
+    }
+}
+
 unsafe extern "C" fn toplevel_formats(_t: *mut WPEToplevel) -> *mut WPEBufferFormats {
+    #[allow(static_mut_refs)]
+    let offer = DMABUF.as_ref();
+    let b = wpe_buffer_formats_builder_new(offer.map_or(std::ptr::null_mut(), |(_, d)| *d));
+    // GPU buffers on the app's device first, when offered: rendered there
+    // and drawn there, never copied.
+    if let Some((offer, device)) = offer {
+        wpe_buffer_formats_builder_append_group(b, *device, WPEBufferFormatUsage::WPE_BUFFER_FORMAT_USAGE_RENDERING);
+        for (fourcc, modifiers) in &offer.formats {
+            for &m in modifiers {
+                wpe_buffer_formats_builder_append_format(b, *fourcc, m);
+            }
+        }
+    }
     // Mappable ARGB/XRGB linear: what we can read back on the CPU and hand
-    // straight to `cce_ui::vk::upload_rgba`. DMABuf comes later (phase 2).
-    let b = wpe_buffer_formats_builder_new(std::ptr::null_mut());
+    // straight to `cce_ui::vk::upload_rgba`.
     wpe_buffer_formats_builder_append_group(
         b,
         std::ptr::null_mut(),
@@ -183,6 +234,19 @@ unsafe extern "C" fn toplevel_class_init(class: *mut c_void, _data: *mut c_void)
 }
 
 // ---- display ----
+
+/// WPEDisplay's own answer, for an app that made no offer: it gets exactly
+/// what it got before this vfunc existed.
+static mut PARENT_DRM_DEVICE: Option<unsafe extern "C" fn(*mut WPEDisplay) -> *mut WPEDRMDevice> = None;
+
+/// The device of an [`offer_dmabuf`]; without one, WPEDisplay's default.
+unsafe extern "C" fn display_drm_device(d: *mut WPEDisplay) -> *mut WPEDRMDevice {
+    #[allow(static_mut_refs)]
+    match DMABUF.as_ref() {
+        Some((_, device)) => *device,
+        None => PARENT_DRM_DEVICE.map_or(std::ptr::null_mut(), |parent| parent(d)),
+    }
+}
 
 unsafe extern "C" fn display_connect(_d: *mut WPEDisplay, _e: *mut *mut GError) -> gboolean {
     1
@@ -226,9 +290,12 @@ unsafe extern "C" fn display_get_clipboard(d: *mut WPEDisplay) -> *mut WPEClipbo
 
 unsafe extern "C" fn display_class_init(class: *mut c_void, _data: *mut c_void) {
     let c = class as *mut WPEDisplayClass;
+    let parent = g_type_class_peek_parent(class as gpointer) as *mut WPEDisplayClass;
+    PARENT_DRM_DEVICE = (!parent.is_null()).then(|| (*parent).get_drm_device).flatten();
     (*c).connect = Some(display_connect);
     (*c).create_view = Some(display_create_view);
     (*c).create_toplevel = Some(display_create_toplevel);
+    (*c).get_drm_device = Some(display_drm_device);
     // Without this, WebKit has no clipboard at all: Ctrl+V in a page reads
     // nothing and Ctrl+C writes nowhere, silently.
     (*c).get_clipboard = Some(display_get_clipboard);

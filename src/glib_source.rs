@@ -11,9 +11,20 @@
 //! correctly, and we only use `g_main_context_query` to learn what to wait on.
 //!
 //! GLib's fd set changes as WebKit opens sockets, and calloop wants stable
-//! registrations, so the changing set lives in an **inner epoll fd** that is
-//! itself the one stable thing calloop watches. Each pump re-syncs that set.
-//! GLib also asks for a timeout, which a calloop timer carries.
+//! registrations, so the changing set lives in an **inner epoll fd**, held
+//! by an **outer** one that is the one stable thing calloop watches. Each
+//! pump rebuilds the inner set from scratch. GLib also asks for a timeout,
+//! which a calloop timer carries.
+//!
+//! **Rebuilt, not diffed.** The set used to be one epoll kept in step by fd
+//! *number*. When GLib closes an fd and the number is reused between two
+//! syncs, the number-diff sees nothing change: the old file stays registered
+//! (epoll ties an entry to the open file, not the number, and it lives on
+//! while anything else holds the file) and the new one is never watched.
+//! WebKit rendering into GPU buffers cycles a short-lived fd every frame,
+//! and an old one left registered and readable spun the browser's loop at
+//! 125,000 pumps a second (2026-10-15). A fresh inner epoll per sync cannot
+//! hold anything stale; it costs a handful of syscalls a pump.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
@@ -21,12 +32,12 @@ use rustix::event::epoll;
 
 use crate::ffi::*;
 
-/// The GLib fd set, mirrored into one epoll fd that calloop can watch.
+/// The GLib fd set, mirrored into an epoll fd that calloop can watch.
 pub struct GlibPoll {
-    epfd: OwnedFd,
-    /// What is currently registered, so a re-sync can diff rather than
-    /// teardown-and-rebuild every pump.
-    registered: Vec<(i32, epoll::EventFlags)>,
+    /// What calloop watches: holds `inner` and nothing else.
+    outer: OwnedFd,
+    /// GLib's fds as of the last sync, rebuilt by every sync.
+    inner: OwnedFd,
     fds: Vec<GPollFD>,
     /// GLib's requested timeout in ms; `None` means "no timer needed".
     pub timeout: Option<u32>,
@@ -56,10 +67,12 @@ fn flags_of(events: u16) -> epoll::EventFlags {
 
 impl GlibPoll {
     pub fn new() -> std::io::Result<Self> {
-        let epfd = epoll::create(epoll::CreateFlags::CLOEXEC)?;
+        let outer = epoll::create(epoll::CreateFlags::CLOEXEC)?;
+        let inner = epoll::create(epoll::CreateFlags::CLOEXEC)?;
+        epoll::add(&outer, &inner, epoll::EventData::new_u64(0), epoll::EventFlags::IN)?;
         let mut this = Self {
-            epfd,
-            registered: Vec::new(),
+            outer,
+            inner,
             fds: Vec::new(),
             timeout: None,
             deadline: None,
@@ -69,7 +82,7 @@ impl GlibPoll {
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
-        self.epfd.as_fd()
+        self.outer.as_fd()
     }
 
     /// Ask GLib what it wants polled, and make the epoll set match.
@@ -110,33 +123,20 @@ impl GlibPoll {
             });
         }
 
-        let want: Vec<(i32, epoll::EventFlags)> = self
-            .fds
-            .iter()
-            .map(|p| (p.fd, flags_of(p.events)))
-            .collect();
-
-        // Diff against what is registered. Same-fd-different-flags is a
-        // modify, not a delete plus add, so a busy socket is not churned.
-        for (fd, flags) in &want {
-            let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
-            let data = epoll::EventData::new_u64(*fd as u64);
-            match self.registered.iter().find(|(f, _)| f == fd) {
-                Some((_, old)) if old == flags => {}
-                Some(_) => {
-                    let _ = epoll::modify(&self.epfd, borrowed, data, *flags);
-                }
-                None => {
-                    let _ = epoll::add(&self.epfd, borrowed, data, *flags);
-                }
-            }
+        // A fresh inner set, swapped in for the old one (see the module
+        // comment for why it is never diffed). Should the epoll calls fail —
+        // out of fds — the old set stays: stale at worst, never empty.
+        let Ok(inner) = epoll::create(epoll::CreateFlags::CLOEXEC) else { return };
+        for p in &self.fds {
+            let borrowed = unsafe { BorrowedFd::borrow_raw(p.fd) };
+            let data = epoll::EventData::new_u64(p.fd as u64);
+            let _ = epoll::add(&inner, borrowed, data, flags_of(p.events));
         }
-        for (fd, _) in &self.registered {
-            if !want.iter().any(|(f, _)| f == fd) {
-                let _ = epoll::delete(&self.epfd, unsafe { BorrowedFd::borrow_raw(*fd) });
-            }
+        if epoll::add(&self.outer, &inner, epoll::EventData::new_u64(0), epoll::EventFlags::IN).is_err() {
+            return;
         }
-        self.registered = want;
+        let _ = epoll::delete(&self.outer, &self.inner);
+        self.inner = inner;
     }
 
     /// Drain the inner epoll so it stops reporting readable. calloop is
@@ -144,6 +144,7 @@ impl GlibPoll {
     /// socket GLib has not consumed yet.
     pub fn drain(&self) {
         let mut events = epoll::EventVec::with_capacity(16);
-        let _ = epoll::wait(&self.epfd, &mut events, 0);
+        let _ = epoll::wait(&self.outer, &mut events, 0);
+        let _ = epoll::wait(&self.inner, &mut events, 0);
     }
 }
